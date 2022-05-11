@@ -9,6 +9,8 @@ import jwt
 import datetime
 from functools import wraps
 
+# from flask_jwt_extended import unset_jwt_cookies
+
 
 app = Flask(__name__)
  
@@ -49,7 +51,7 @@ def token_required(f):
         if not token:
             return jsonify({'message': 'a valid token is missing'}), 401
         try:
-            # decoding the payload to fetch the stored details
+            # decoding the payload to fetch the stored 
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = Users.query.filter_by(public_id=data['public_id']).first()
         except:
@@ -86,7 +88,7 @@ def signup_user():
 @app.route('/login', methods=['POST']) 
 def login_user():
     # creates dictionary of form data
-    auth = request.authorization  
+    auth = request.authorization 
     if not auth or not auth.username or not auth.password: 
         # returns 401 if any username or / and password is missing
         return make_response('could not verify', 401, {'Authentication': 'login required"'})   
@@ -106,7 +108,10 @@ def login_user():
             'public_id' : user.public_id, 
             'exp' : datetime.datetime.utcnow() + datetime.timedelta(minutes=45)
             }, app.config['SECRET_KEY'], "HS256") 
-        return jsonify({'token' : token.decode('UTF-8')}), 201
+        # return jsonify({'token' : token}), 201
+        response = make_response(jsonify({'token' : token}))
+        response.set_cookie('token', token, httponly=True)
+        return response, 201
     # returns 403/401 if password is wrong
     return make_response('could not verify',  401, {'Authentication': '"login required"'})
 
@@ -115,10 +120,11 @@ def login_user():
 # this route sends back list of users users
 @app.route('/users', methods=['GET'])
 @token_required
-def get_all_users(): 
+def get_all_users(current_user): 
     # querying the database
     # for all the entries in it 
     users = Users.query.all()
+    print(users)
     # converting the query objects
     # to list of jsons
     result = []  
@@ -185,5 +191,15 @@ def delete_book(current_user, book_id):
     db.session.commit()  
     return jsonify({'message': 'Book deleted'})
  
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    resp = jsonify({'logout': True})
+    resp.delete_cookie('token')
+    return resp, 200
+
+
 if  __name__ == '__main__': 
     app.run(debug=True)
+
+    
