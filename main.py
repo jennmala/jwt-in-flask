@@ -12,10 +12,19 @@ app.config['SQLALCHEMY_DATABASE_URI']='sqlite:///bookstore.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = True 
 db = SQLAlchemy(app)
 
+# in minutes
+access_token_lifetime = 2
+access_token_refresh_time = 1
+
 app.config['JWT_SECRET_KEY']='97782032435c3a4f964235adb305c268'
-app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(seconds=20)
-app.config['JWT_COOKIE_CSRF_PROTECT'] = False # SET TRUE IN PRODUCTION (and handle in frontend)
+app.config['JWT_TOKEN_LOCATION'] = ["cookies", "headers"]
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=access_token_lifetime)
+app.config['JWT_COOKIE_SECURE'] = False # SET TRUE IN PRODUCTION
+app.config['JWT_COOKIE_CSRF_PROTECT'] = True # SET TRUE IN PRODUCTION (and handle in frontend)
+app.config['JWT_CSRF_METHODS'] = ["POST", "PUT", "PATCH", "DELETE", "GET"]
+app.config['JWT_CSRF_IN_COOKIES'] = True # CAN SET FALSE AND PASS TO FRONTEND IN BODY
+
+ 
 # app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(hours=8)
 
 jwt = JWTManager(app)
@@ -27,7 +36,6 @@ class Users(db.Model):
     name = db.Column(db.String(50))
     password = db.Column(db.String(50))
     admin = db.Column(db.Boolean)
-
 
 class Books(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -42,9 +50,24 @@ class TokenBlocklist(db.Model):
     jti = db.Column(db.String(36), nullable=False, index=True)
     type = db.Column(db.String(16), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), default=lambda: get_current_user().id, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.now(), nullable=False,)
+    created_at = db.Column(db.DateTime, default=datetime.now(), nullable=False)
 
 
+
+def clear_expired_blocked_tokens():
+    now = datetime.now(timezone.utc)
+    expired_time = now - timedelta(minutes=access_token_lifetime)
+    print(now)
+    print(timedelta(minutes=access_token_lifetime))
+    print(expired_time)
+    tokens = TokenBlocklist.query.filter(TokenBlocklist.created_at < expired_time)
+    if tokens:
+        for token in tokens:
+            print(token)
+            db.session.delete(token) 
+            db.session.commit()
+
+clear_expired_blocked_tokens()
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -74,17 +97,26 @@ def login():
 #     access_token = create_access_token(identity=identity)
 #     return jsonify(access_token=access_token)
 
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload: dict):
+    jti = jwt_payload["jti"]
+    # token = TokenBlocklist.query.filter_by(jti=jti).scalar()
+    token = db.session.query(TokenBlocklist.id).filter_by(jti=jti).scalar()
+    return token is not None
+
 
 @app.route("/logout", methods=["POST"])
 @jwt_required(verify_type=False)
 def logout():
+    current_user = get_jwt_identity() 
+    user = Users.query.filter_by(name=current_user).first()
     token = get_jwt()
-    # if token["jti"]:
-        # jti = token["jti"]
-        # ttype = token["type"]
-        # now = datetime.now(timezone.utc)
-        # db.session.add(TokenBlocklist(jti=jti, type=ttype, created_at=now))
-        # db.session.commit()
+    if token:
+        jti = token["jti"]
+        ttype = token["type"]
+        now = datetime.now(timezone.utc)
+        db.session.add(TokenBlocklist(jti=jti, type=ttype, created_at=now, user_id=user.id))
+        db.session.commit()
     response = jsonify({"msg": "logout successful, token successfully revoked"})
     # unset_jwt_cookies(response)
     return response, 200
@@ -94,24 +126,13 @@ def refresh_expiring_jwts(response):
     try:
         exp_timestamp = get_jwt()["exp"]
         now = datetime.now(timezone.utc)
-        target_timestamp = datetime.timestamp(now + timedelta(seconds=10))
+        target_timestamp = datetime.timestamp(now + timedelta(minutes=access_token_refresh_time))
         if target_timestamp > exp_timestamp:
             access_token = create_access_token(identity=get_jwt_identity())
             set_access_cookies(response, access_token)
         return response
     except (RuntimeError, KeyError):
-        # Case where there is not a valid JWT. Just return the original response
         return response
-
-
-@jwt.token_in_blocklist_loader
-def check_if_token_revoked(jwt_header, jwt_payload: dict) -> bool:
-    jti = jwt_payload["jti"]
-    token = db.session.query(TokenBlocklist.id).filter_by(jti=jti).scalar()
-
-    return token is not None
-
-
 
 
 @app.route("/books", methods=["GET"])
@@ -127,8 +148,7 @@ def get_books():
         book_data['Author'] = book.Author
         book_data['Publisher'] = book.Publisher
         book_data['book_prize'] = book.book_prize
-        output.append(book_data)
- 
+        output.append(book_data) 
     return jsonify({'list_of_books' : output, 'logged_in_as' : current_user}), 200
 
 
@@ -167,4 +187,3 @@ def delete_book(book_id):
 
 if __name__ == "__main__":
     app.run()
-
